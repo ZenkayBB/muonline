@@ -23,6 +23,7 @@ namespace Client.Main.Objects
         private Direction _direction;
         private Vector2 _location;
         protected Queue<Vector2> _currentPath;   // FIFO – cheaper removal than List.RemoveAt(0)
+        private int _movementId = 0;
 
         // Camera control
         private float _currentCameraDistance = Constants.DEFAULT_CAMERA_DISTANCE;
@@ -89,7 +90,7 @@ namespace Client.Main.Objects
             {
                 var x = Location.X * Constants.TERRAIN_SCALE + 0.5f * Constants.TERRAIN_SCALE;
                 var y = Location.Y * Constants.TERRAIN_SCALE + 0.5f * Constants.TERRAIN_SCALE;
-                var z = World.Terrain.RequestTerrainHeight(x, y);
+                var z = World is null ? 0 : World.Terrain.RequestTerrainHeight(x, y);
                 return new Vector3(x, y, z);
             }
         }
@@ -139,6 +140,7 @@ namespace Client.Main.Objects
 
         public void Reset()
         {
+            _movementId++;
             _currentPath = null;
             MoveTargetPosition = Vector3.Zero;
             _movementIntent = false;
@@ -169,6 +171,52 @@ namespace Client.Main.Objects
 
             // Align target angle with current rotation to prevent snapping
             _targetAngle = Angle;
+        }
+
+        /// <summary>
+        /// Applies a server-provided walk path for remote objects.
+        /// This avoids client-side pathfinding which can desync from the server.
+        /// </summary>
+        /// <param name="steps">A list of tile coordinates the object should walk through, in order.</param>
+        public void ApplyServerWalkPath(IReadOnlyList<Vector2> steps)
+        {
+            if (steps == null || steps.Count == 0)
+            {
+                StopMovement();
+                return;
+            }
+
+            // Reset any previous movement to prevent "walking from spawn" artifacts.
+            _currentPath?.Clear();
+
+            // Ensure we're starting from the current logical tile.
+            // Also synchronize movement target to prevent IsMoving due to stale Z.
+            MoveTargetPosition = TargetPosition;
+
+            int startIndex = 0;
+            var currentTile = new Vector2((int)Location.X, (int)Location.Y);
+            while (startIndex < steps.Count && steps[startIndex] == currentTile)
+                startIndex++;
+
+            if (startIndex >= steps.Count)
+            {
+                StopMovement();
+                return;
+            }
+
+            var queue = new Queue<Vector2>(steps.Count - startIndex);
+            for (int i = startIndex; i < steps.Count; i++)
+            {
+                queue.Enqueue(new Vector2((int)steps[i].X, (int)steps[i].Y));
+            }
+
+            _currentPath = queue;
+            _movementIntent = true;
+
+            if (_currentPath.Count > 0)
+            {
+                UpdateFacingFromVector(_currentPath.Peek() - currentTile);
+            }
         }
 
         public void OnDirectionChanged()
@@ -364,6 +412,7 @@ namespace Client.Main.Objects
                 player.OnPlayerMoved();
             }
 
+            int currentMovementId = ++_movementId;
             Vector2 startPos = new Vector2((int)Location.X, (int)Location.Y);
             WorldControl currentWorld = World;
             _ = Task.Run(() =>
@@ -381,6 +430,9 @@ namespace Client.Main.Objects
 
                 MuGame.ScheduleOnMainThread(() =>
                 {
+                    if (_movementId != currentMovementId)
+                        return;
+
                     ApplyPathOnMainThread(path, sendToServer, currentWorld);
                 });
             });
@@ -489,7 +541,7 @@ namespace Client.Main.Objects
                             (int)(newLocation.Y - oldLocation.Y));
         }
 
-        private void UpdatePosition(GameTime gameTime)
+        public void UpdatePosition(GameTime gameTime)
         {
             if (World is not WalkableWorldControl walkableWorld)
                 return;
@@ -580,12 +632,14 @@ namespace Client.Main.Objects
             var cameraOffset = new Vector3(x, y, z);
             var cameraPosition = position + cameraOffset;
 
+#pragma warning disable CS0618
             Camera.Instance.FOV = 35;
+#pragma warning restore CS0618
 #if ANDROID
             Camera.Instance.FOV *= Constants.ANDROID_FOV_SCALE;
 #endif
-            Camera.Instance.Position = cameraPosition;
-            Camera.Instance.Target = position;
+            // Update Position+Target atomically to avoid duplicate CameraMoved events
+            Camera.Instance.SetView(cameraPosition, position);
         }
 
         private void MoveTowards(Vector2 target, GameTime gameTime)
@@ -707,5 +761,12 @@ namespace Client.Main.Objects
         //     }
         //     base.Dispose(disposing);
         // }
+
+        protected override void OnWorldChanged(WorldControl newWorld, WorldControl prevWorld)
+        {
+            base.OnWorldChanged(newWorld, prevWorld);
+            //UpdateCameraPosition(Position);
+            UpdatePosition(new GameTime());
+        }
     }
 }

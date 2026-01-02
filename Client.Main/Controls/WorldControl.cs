@@ -12,13 +12,8 @@ using Client.Main.Objects.Player;
 using Microsoft.Extensions.Logging;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
-using System;
-using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
-using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Threading.Tasks;
 
 namespace Client.Main.Controls
 {
@@ -106,82 +101,15 @@ namespace Client.Main.Controls
     /// </summary>
     public abstract class WorldControl : GameControl
     {
-
-        #region Performance Metrics for Objects
-        public struct ObjectPerformanceMetrics
-        {
-            public int TotalObjects;
-            public int ConsideredForRender;
-            public int CulledByFrustum;
-            public int DrawnSolid;
-            public int DrawnTransparent;
-            public int DrawnTotal => DrawnSolid + DrawnTransparent;
-            public int StaticChunksTotal;
-            public int StaticChunksVisible;
-            public int StaticChunksCulled;
-            public int StaticObjectsCulledByChunk;
-        }
-
-        public ObjectPerformanceMetrics ObjectMetrics { get; private set; }
-        #endregion
-
         // --- Fields & Constants ---
-
-        private sealed class StaticChunk : IDisposable
-        {
-            public BoundingBox Bounds;
-            public Vector2 Center2D;
-            public bool HasBounds;
-            public bool IsVisible;
-            public readonly List<WorldObject> Objects = new();
-
-            // Surface caching for static objects
-            public RenderTarget2D CachedSurface;
-            public bool SurfaceDirty = true;
-            public Matrix LastViewProjection;
-            public int CacheableObjectCount;
-
-            public void Dispose()
-            {
-                CachedSurface?.Dispose();
-                CachedSurface = null;
-            }
-        }
-
-        private const int StaticChunkSizeTiles = 16;
-
-        private const float CullingOffset = 800f;
-
         private int _renderCounter;
         private DepthStencilState _currentDepthState = DepthStencilState.Default;
         private readonly WorldObjectDepthAsc _cmpAsc = new();
         private readonly WorldObjectDepthDesc _cmpDesc = new();
         private readonly WorldObjectBatchOptimizedAsc _cmpBatchAsc = new();
-        private readonly WorldObjectBatchOptimizedDesc _cmpBatchDesc = new();
         private static readonly DepthStencilState DepthStateDefault = DepthStencilState.Default;
         private static readonly DepthStencilState DepthStateDepthRead = DepthStencilState.DepthRead;
-        private StaticChunk[] _staticChunks;
-        private int _staticChunkGridSize;
-        private float _staticChunkWorldSize;
-        private bool _staticChunksReady;
-        private int _staticChunkCountWithObjects;
-        private bool _staticChunkCacheDirty;
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool IsChunkableStaticObject(WorldObject obj)
-        {
-            if (obj == null) return false;
-            int type = obj.Type;
-            if ((uint)type >= (uint)MapTileObjects.Length) return false;
-            var registeredType = MapTileObjects[type];
-            if (registeredType == null) return false;
-
-            // Only chunk map tile style objects (non-walkers, non-players/monsters/items)
-            if (obj is WalkerObject || obj is PlayerObject || obj is MonsterObject || obj is DroppedItemObject)
-                return false;
-
-            return registeredType.IsAssignableFrom(obj.GetType());
-        }
+       
 
         private readonly List<WorldObject> _solidBehind = new();
         private readonly List<WorldObject> _transparentObjects = new();
@@ -190,6 +118,7 @@ namespace Client.Main.Controls
         private readonly List<PlayerObject> _players = new();
         private readonly List<MonsterObject> _monsters = new();
         private readonly List<DroppedItemObject> _droppedItems = new();
+        private readonly CategorizedChildren<WorldObject, CategoryChildrenObject> _categorizedChildren;
 
         public Dictionary<ushort, WalkerObject> WalkerObjectsById { get; } = new();
 
@@ -204,11 +133,12 @@ namespace Client.Main.Controls
 
         public short WorldIndex { get; private set; }
         public bool IsSunWorld { get; protected set; } = true;
-        
-        public bool EnableShadows { get; protected set; } = true;
+
+        // Disable shadows by default to avoid heavy shadow-map renders during camera movement
+        public bool EnableShadows { get; protected set; } = false;
 
         public ChildrenCollection<WorldObject> Objects { get; private set; }
-            = new ChildrenCollection<WorldObject>(null);
+        = new ChildrenCollection<WorldObject>(null);
         public IReadOnlyList<WalkerObject> Walkers => _walkers;
         public IReadOnlyList<PlayerObject> Players => _players;
         public IReadOnlyList<MonsterObject> Monsters => _monsters;
@@ -243,7 +173,188 @@ namespace Client.Main.Controls
             Objects.ControlAdded += OnObjectAdded;
             Objects.ControlRemoved += OnObjectRemoved;
 
+            var rules = new Dictionary<CategoryChildrenObject, CategoryRule<WorldObject>>
+            {
+                [CategoryChildrenObject.ObjectsInView] = new()
+                {
+                    Predicate = o => !o.OutOfView,
+                    Watch = (o, invalidate) =>
+                    {
+                        void Handler(object? sender, EventArgs e) => invalidate();
+
+                        o.Appear += Handler;
+                        o.Dissapear += Handler;
+                        return new ActionDisposable(() =>
+                        {
+                            o.Appear -= Handler;
+                            o.Dissapear -= Handler;
+                        });
+                    }
+                }
+            };
+
+            _categorizedChildren = new CategorizedChildren<WorldObject, CategoryChildrenObject>(Objects, rules);
+            // Central camera move handler: recompute visibility for all objects in a single pass
+            Camera.Instance.CameraMoved += Camera_Instance_CameraMoved;
         }
+
+        // ==================== CAMPOS DE OPTIMIZACIÓN ====================
+        // Debounced camera moved handling
+        private volatile bool _cameraMovePending = false;
+        private const int CAMERA_PROCESS_COOLDOWN_MS = 16; // 1 frame @ 60fps
+        private long _lastCameraProcessTime = 0;
+
+        // Sistema incremental: procesa N objetos por frame en lugar de todos
+        private int _visibilityCheckIndex = 0;
+        private const int OBJECTS_PER_FRAME = 100; // Ajusta según rendimiento
+        private bool _isProcessingVisibility = false;
+
+        // Cache de datos de cámara
+        private Vector2 _cachedCameraPos2D;
+        private float _cachedMaxDistSq;
+
+        // Procesamiento incremental de movimiento: detecta objetos fuera de vista que entran en el frustum por su destino
+        private int _movementCheckIndex = 0;
+        private const int MOVEMENT_CHECKS_PER_FRAME = 100; // Ajusta según rendimiento
+        private int _movementChecksPerformed = 0;
+        private int _movementForcesTriggered = 0;
+        // --- Sort flags to avoid sorting every frame ---
+        private bool _needSortSolidBehind = true;
+        private bool _needSortTransparent = true;
+        private bool _needSortSolidInFront = true;
+        private int _sortsSkipped = 0;
+        private int _sortsPerformed = 0;
+        private void Camera_Instance_CameraMoved(object? sender, EventArgs e)
+        {
+            // Marca como pendiente y resetea el índice para empezar desde el principio
+            _cameraMovePending = true;
+            _visibilityCheckIndex = 0;
+
+            // Camera changed — transparent ordering depends on camera; request re-sort when needed
+            _needSortTransparent = true;
+            _needSortSolidBehind = true;
+            _needSortSolidInFront = true;
+        }
+
+        // Solución rápida: cálculo inline, sin snapshot, con caché de frustum y posición
+        // ==================== PROCESAMIENTO INCREMENTAL (RECOMENDADO) ====================
+        private void ProcessPendingCameraMoveIncremental()
+        {
+            // Si no hay trabajo pendiente, salir
+            if (!_cameraMovePending && !_isProcessingVisibility) 
+                return;
+
+            var camera = Camera.Instance;
+            if (camera == null) return;
+
+            // Cooldown: evita procesar demasiado frecuentemente
+            long now = Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000);
+            if (now - _lastCameraProcessTime < CAMERA_PROCESS_COOLDOWN_MS)
+                return;
+            _lastCameraProcessTime = now;
+
+            // Marcar que estamos procesando y resetear flag de movimiento
+            if (_cameraMovePending)
+            {
+                _cameraMovePending = false;
+                _isProcessingVisibility = true;
+                _visibilityCheckIndex = 0;
+
+                // Actualizar cache de cámara
+                _cachedCameraPos2D = new Vector2(camera.Position.X, camera.Position.Y);
+                float maxInfluence = Math.Max(2000f, camera.ViewFar * 0.5f);
+                _cachedMaxDistSq = maxInfluence * maxInfluence;
+            }
+
+            if (!_isProcessingVisibility)
+                return;
+
+            // Procesar un lote de objetos
+            int objectCount = Objects.Count;
+            if (objectCount == 0)
+            {
+                _isProcessingVisibility = false;
+                return;
+            }
+
+            int processed = 0;
+            int startIndex = _visibilityCheckIndex;
+
+            // Procesar hasta OBJECTS_PER_FRAME objetos
+            while (processed < OBJECTS_PER_FRAME && _visibilityCheckIndex < objectCount)
+            {
+                try
+                {
+                    var obj = Objects[_visibilityCheckIndex];
+                    if (obj != null && obj.Status != GameControlStatus.Disposed)
+                    {
+                        // Cálculo inline de distancia (más rápido)
+                        var pos = obj.WorldPosition.Translation;
+                        float dx = pos.X - _cachedCameraPos2D.X;
+                        float dy = pos.Y - _cachedCameraPos2D.Y;
+                        float distSq = dx * dx + dy * dy;
+
+                        if (distSq <= _cachedMaxDistSq)
+                        {
+                            obj.RecalculateOutOfView();
+                        }
+                    }
+                }
+                catch { /* Evitar romper el loop */ }
+
+                _visibilityCheckIndex++;
+                processed++;
+            }
+
+            // Si terminamos de procesar todos los objetos
+            if (_visibilityCheckIndex >= objectCount)
+            {
+                _isProcessingVisibility = false;
+                _visibilityCheckIndex = 0;
+            }
+        }
+
+        // Revisa incrementalmente objetos fuera de vista que se mueven hacia la cámara y fuerza su visibilidad (bajo presupuesto)
+        private void ProcessMovementEnteringFrustumIncremental()
+        {
+            int count = Objects.Count;
+            if (count == 0) return;
+
+            int processed = 0;
+            while (processed < MOVEMENT_CHECKS_PER_FRAME && _movementCheckIndex < count)
+            {
+                try
+                {
+                    var obj = Objects[_movementCheckIndex];
+                    if (obj != null && obj.Status == GameControlStatus.Ready && obj.OutOfView)
+                    {
+                        if (obj is WalkerObject walker)
+                        {
+                            // Solo comprobar si parece moverse (evita activar estáticos innecesarios)
+                            Vector3 moveTarget = walker.MoveTargetPosition;
+                            if (Vector3.DistanceSquared(moveTarget, walker.Position) > 0.001f)
+                            {
+                                var bbox = new BoundingBox(
+                                    new Vector3(moveTarget.X - 16f, moveTarget.Y - 16f, moveTarget.Z - 16f),
+                                    new Vector3(moveTarget.X + 16f, moveTarget.Y + 16f, moveTarget.Z + 16f));
+                                if (Camera.Instance.Frustum.Contains(bbox) != ContainmentType.Disjoint)
+                                {
+                                    walker.ForceInView();
+                                    _movementForcesTriggered++;
+                                }
+                                _movementChecksPerformed++;
+                            }
+                        }
+                    }
+                }
+                catch { /* no fallar el loop */ }
+
+                _movementCheckIndex = (_movementCheckIndex + 1) % Math.Max(1, count);
+                processed++;
+            }
+        }
+
+        // Para máximo rendimiento: considerar procesamiento incremental y spatial partitioning en el futuro
 
         // --- Lifecycle Methods ---
 
@@ -258,22 +369,6 @@ namespace Client.Main.Controls
             var dataPath = Constants.DataPath;
             var tasks = new List<Task>();
 
-            // Load terrain OBJ
-            var objPath = Path.Combine(dataPath, worldFolder, $"EncTerrain{WorldIndex}.obj");
-            if (File.Exists(objPath))
-            {
-                var reader = new OBJReader();
-                OBJ obj = await reader.Load(objPath);
-                foreach (var mapObj in obj.Objects)
-                {
-                    var instance = WorldObjectFactory.CreateMapTileObject(this, mapObj);
-                    if (instance != null) tasks.Add(instance.Load());
-                }
-            }
-
-            await Task.WhenAll(tasks);
-            BuildStaticChunkCache();
-
             // Load camera settings
             var capPath = Path.Combine(dataPath, worldFolder, "Camera_Angle_Position.bmd");
             if (File.Exists(capPath))
@@ -287,6 +382,22 @@ namespace Client.Main.Controls
                 Camera.Instance.Position = data.CameraPosition;
                 Camera.Instance.Target = data.HeroPosition;
             }
+
+            // Load terrain OBJ
+            var objPath = Path.Combine(dataPath, worldFolder, $"EncTerrain{WorldIndex}.obj");
+            if (File.Exists(objPath))
+            {
+                var reader = new OBJReader();
+                OBJ obj = await reader.Load(objPath);
+                foreach (var mapObj in obj.Objects)
+                {
+                    var instance = WorldObjectFactory.CreateMapTileObject(this, mapObj);
+                    if (instance != null) tasks.Add(instance.Load());
+                }
+            }
+
+            // tasks.Add(Container.Load());
+            await Task.WhenAll(tasks);
 
             // Play or stop background music
             if (!string.IsNullOrEmpty(BackgroundMusicPath))
@@ -312,20 +423,61 @@ namespace Client.Main.Controls
             base.Update(time);
             if (Status != GameControlStatus.Ready) return;
 
-            // Iterate over a stable snapshot to avoid per-object lock contention
-            var snapshot = Objects.GetSnapshot();
-            for (int i = 0; i < snapshot.Count; i++)
+            // Procesamiento incremental de visibilidad (recomendado)
+            ProcessPendingCameraMoveIncremental();
+
+            // Procesamiento incremental que activa objetos fuera de vista cuando su destino entra en el frustum
+            ProcessMovementEnteringFrustumIncremental();
+
+            var objects = _categorizedChildren.Get(CategoryChildrenObject.ObjectsInView);
+            for (int i = 0; i < objects.Count; i++)
             {
-                var obj = snapshot[i];
+                var obj = objects[i];
                 if (obj != null && obj.Status != GameControlStatus.Disposed)
                     obj.Update(time);
+            }
+
+            // Also advance a small batch of out-of-view movers.
+            // This keeps remote walkers in sync without rendering them, so when they enter the frustum
+            // they don't "teleport" to the final target.
+            ProcessOutOfViewMovingWalkersIncremental(time);
+        }
+
+        private const int OUT_OF_VIEW_MOVERS_PER_FRAME = 8;
+        private int _outOfViewMoverIndex;
+
+        private void ProcessOutOfViewMovingWalkersIncremental(GameTime time)
+        {
+            int count = Objects.Count;
+            if (count == 0) return;
+
+            int processed = 0;
+            while (processed < OUT_OF_VIEW_MOVERS_PER_FRAME)
+            {
+                if (_outOfViewMoverIndex >= count)
+                    _outOfViewMoverIndex = 0;
+
+                var obj = Objects[_outOfViewMoverIndex++];
+                processed++;
+
+                if (obj == null || obj.Status != GameControlStatus.Ready || !obj.OutOfView)
+                    continue;
+
+                if (obj is WalkerObject walker)
+                {
+                    // Only update walkers which are currently moving or have movement intent.
+                    if (walker.MovementIntent || walker.IsMoving)
+                    {
+                        walker.Update(time);
+                    }
+                }
             }
         }
 
         public override void Draw(GameTime time)
         {
             if (Status != GameControlStatus.Ready) return;
-            
+
             // Build shadow map before any backbuffer drawing so terrain tiles aren't lost
             if (EnableShadows && Constants.ENABLE_SHADOW_MAPPING && GraphicsManager.Instance.ShadowMapRenderer != null)
             {
@@ -365,7 +517,13 @@ namespace Client.Main.Controls
         private void OnObjectAdded(object sender, ChildrenEventArgs<WorldObject> e)
         {
             e.Control.World = this;
+
             TrackObjectType(e.Control);
+
+            // Track matrix changes to mark sort-dirty when position/depth changes
+            e.Control.MatrixChanged += OnObjectMatrixChanged;
+            _needSortSolidBehind = _needSortTransparent = _needSortSolidInFront = true;
+
             if (e.Control is WalkerObject walker &&
                 walker.NetworkId != 0 &&
                 walker.NetworkId != 0xFFFF)
@@ -381,14 +539,16 @@ namespace Client.Main.Controls
                 }
                 WalkerObjectsById[walker.NetworkId] = walker; // Always update/add
             }
-
-            if (e.Control is MapTileObject)
-                _staticChunkCacheDirty = true;
         }
 
         private void OnObjectRemoved(object sender, ChildrenEventArgs<WorldObject> e)
         {
             UntrackObjectType(e.Control);
+
+            // Stop tracking matrix changes and mark sorts needed
+            e.Control.MatrixChanged -= OnObjectMatrixChanged;
+            _needSortSolidBehind = _needSortTransparent = _needSortSolidInFront = true;
+
             if (e.Control is WalkerObject walker &&
                 walker.NetworkId != 0 &&
                 walker.NetworkId != 0xFFFF)
@@ -407,9 +567,6 @@ namespace Client.Main.Controls
                     }
                 }
             }
-
-            if (e.Control is MapTileObject)
-                _staticChunkCacheDirty = true;
         }
 
         private void TrackObjectType(WorldObject obj)
@@ -567,55 +724,44 @@ namespace Client.Main.Controls
             _transparentObjects.Clear();
             _solidInFront.Clear();
 
-            var objects = Objects.GetSnapshot();
-            var metrics = new ObjectPerformanceMetrics
-            {
-                TotalObjects = objects.Count,
-                StaticChunksTotal = _staticChunkCountWithObjects
-            };
+            var objects = _categorizedChildren.Get(CategoryChildrenObject.ObjectsInView);
 
-            var cam = Camera.Instance;
-            var frustum = cam?.Frustum;
-            if (cam == null || frustum == null) return;
 
-            Vector2 cam2D = new(cam.Position.X, cam.Position.Y);
-            float maxDist = cam.ViewFar + CullingOffset;
-            float maxDistSq = maxDist * maxDist;
-
-            if (_staticChunkCacheDirty || !_staticChunksReady)
-            {
-                BuildStaticChunkCache();
-                _staticChunkCacheDirty = false;
-            }
-
-            bool chunkCullingActive = _staticChunksReady && _staticChunkCountWithObjects > 0;
-            if (chunkCullingActive)
-            {
-                UpdateStaticChunkVisibility(cam2D, maxDistSq, frustum);
-            }
-
-            // Classify objects using the cached snapshot to avoid per-object locks
-            for (int i = 0; i < objects.Count; i++)
+            for (var i = 0; i < objects.Count; i++)
             {
                 var obj = objects[i];
-                if (chunkCullingActive && IsChunkableStaticObject(obj))
-                    continue; // Static objects handled via chunk culling
 
-                ClassifyObject(obj, cam2D, maxDistSq, frustum, ref metrics, skipViewCheck: false);
+                if (obj is WalkerObject)
+                {
+                    _solidInFront.Add(obj);
+                }
+                else if (obj.IsTransparent)
+                {
+                    _transparentObjects.Add(obj);
+                }
+                else if (obj.AffectedByTransparency)
+                {
+                    _solidBehind.Add(obj);
+                }
+                else
+                {
+                    _solidInFront.Add(obj);
+                }
             }
-
-            // Chunk-based culling/classification for static map objects
-            if (chunkCullingActive)
-            {
-                ClassifyStaticChunks(cam2D, maxDistSq, frustum, ref metrics);
-            }
-
-            ObjectMetrics = metrics;
 
             // Draw solid behind objects
             if (_solidBehind.Count > 1)
             {
-                _solidBehind.Sort(Constants.ENABLE_BATCH_OPTIMIZED_SORTING ? _cmpBatchAsc : _cmpAsc);
+                if (_needSortSolidBehind)
+                {
+                    _solidBehind.Sort(Constants.ENABLE_BATCH_OPTIMIZED_SORTING ? _cmpBatchAsc : _cmpAsc);
+                    _needSortSolidBehind = false;
+                    _sortsPerformed++;
+                }
+                else
+                {
+                    _sortsSkipped++;
+                }
             }
             DrawListWithSpriteBatchGrouping(_solidBehind, DepthStateDefault, time);
 
@@ -623,14 +769,32 @@ namespace Client.Main.Controls
             if (_transparentObjects.Count > 1)
             {
                 // Transparent rendering requires strict back-to-front ordering, so never batch-optimize.
-                _transparentObjects.Sort(_cmpDesc);
+                if (_needSortTransparent)
+                {
+                    _transparentObjects.Sort(_cmpDesc);
+                    _needSortTransparent = false;
+                    _sortsPerformed++;
+                }
+                else
+                {
+                    _sortsSkipped++;
+                }
             }
             DrawListWithSpriteBatchGrouping(_transparentObjects, DepthStateDepthRead, time);
 
             // Draw solid in front objects
             if (_solidInFront.Count > 1)
             {
-                _solidInFront.Sort(Constants.ENABLE_BATCH_OPTIMIZED_SORTING ? _cmpBatchAsc : _cmpAsc);
+                if (_needSortSolidInFront)
+                {
+                    _solidInFront.Sort(Constants.ENABLE_BATCH_OPTIMIZED_SORTING ? _cmpBatchAsc : _cmpAsc);
+                    _needSortSolidInFront = false;
+                    _sortsPerformed++;
+                }
+                else
+                {
+                    _sortsSkipped++;
+                }
             }
             DrawListWithSpriteBatchGrouping(_solidInFront, DepthStateDefault, time);
 
@@ -715,10 +879,11 @@ namespace Client.Main.Controls
 
         private void DrawAfterPass(List<WorldObject> list, DepthStencilState state, GameTime time)
         {
-            if (list.Count == 0) return;
+            var objCount = list.Count;
+            if (objCount == 0) return;
             SetDepthState(state);
-            foreach (var obj in list)
-                obj.DrawAfter(time);
+            for (var i = 0; i < objCount; i++)
+                list[i].DrawAfter(time);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -729,87 +894,6 @@ namespace Client.Main.Controls
                 GraphicsDevice.DepthStencilState = state;
                 _currentDepthState = state;
             }
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private void ClassifyObject(WorldObject obj, Vector2 cam2D, float maxDistSq, BoundingFrustum frustum,
-            ref ObjectPerformanceMetrics metrics, bool skipViewCheck)
-        {
-            if (obj == null) return;
-            if (obj.Status == GameControlStatus.Disposed || !obj.Visible) return;
-
-            metrics.ConsideredForRender++;
-
-            if (!skipViewCheck && !IsObjectInView(obj, cam2D, maxDistSq, frustum))
-            {
-                metrics.CulledByFrustum++;
-                return;
-            }
-
-            if (obj.IsTransparent)
-            {
-                _transparentObjects.Add(obj);
-                metrics.DrawnTransparent++;
-            }
-            else if (obj.AffectedByTransparency)
-            {
-                _solidBehind.Add(obj);
-                metrics.DrawnSolid++;
-            }
-            else
-            {
-                _solidInFront.Add(obj);
-                metrics.DrawnSolid++;
-            }
-        }
-
-        private void ClassifyStaticChunks(Vector2 cam2D, float maxDistSq, BoundingFrustum frustum,
-            ref ObjectPerformanceMetrics metrics)
-        {
-            if (_staticChunks == null) return;
-
-            for (int i = 0; i < _staticChunks.Length; i++)
-            {
-                var chunk = _staticChunks[i];
-                if (chunk.Objects.Count == 0) continue;
-
-                if (!chunk.IsVisible)
-                {
-                    metrics.StaticChunksCulled++;
-                    // Count all valid objects in this chunk as culled
-                    for (int n = 0; n < chunk.Objects.Count; n++)
-                    {
-                        var obj = chunk.Objects[n];
-                        if (obj == null) continue;
-                        if (obj.Status == GameControlStatus.Disposed) continue;
-                        metrics.ConsideredForRender++;
-                        metrics.CulledByFrustum++;
-                        metrics.StaticObjectsCulledByChunk++;
-                    }
-                    continue;
-                }
-
-                metrics.StaticChunksVisible++;
-                for (int n = 0; n < chunk.Objects.Count; n++)
-                    ClassifyObject(chunk.Objects[n], cam2D, maxDistSq, frustum, ref metrics, skipViewCheck: true);
-            }
-        }
-
-        // --- View Frustum & Culling ---
-
-        public bool IsObjectInView(WorldObject obj)
-        {
-            var pos3 = obj.WorldPosition.Translation;
-            var cam = Camera.Instance;
-            if (cam == null) return false;
-
-            var cam2 = new Vector2(cam.Position.X, cam.Position.Y);
-            var obj2 = new Vector2(pos3.X, pos3.Y);
-            var maxDist = cam.ViewFar + CullingOffset;
-            if (Vector2.DistanceSquared(cam2, obj2) > maxDist * maxDist)
-                return false;
-
-            return cam.Frustum.Contains(obj.BoundingBoxWorld) != ContainmentType.Disjoint;
         }
 
         // Fast path for loops where camera info is already cached
@@ -823,30 +907,12 @@ namespace Client.Main.Controls
             return frustum != null && frustum.Contains(obj.BoundingBoxWorld) != ContainmentType.Disjoint;
         }
 
-        private void UpdateStaticChunkVisibility(Vector2 cam2, float maxDistSq, BoundingFrustum frustum)
+        private void OnObjectMatrixChanged(object sender, EventArgs e)
         {
-            if (_staticChunks == null || frustum == null) return;
-
-            const float DistancePadding = 400f;
-            float paddedMaxDistSq = maxDistSq + DistancePadding * DistancePadding;
-
-            for (int i = 0; i < _staticChunks.Length; i++)
-            {
-                var chunk = _staticChunks[i];
-                if (!chunk.HasBounds || chunk.Objects.Count == 0)
-                {
-                    chunk.IsVisible = false;
-                    continue;
-                }
-
-                if (Vector2.DistanceSquared(cam2, chunk.Center2D) > paddedMaxDistSq)
-                {
-                    chunk.IsVisible = false;
-                    continue;
-                }
-
-                chunk.IsVisible = frustum.Contains(chunk.Bounds) != ContainmentType.Disjoint;
-            }
+            // Mark sort flags so render lists will be sorted next frame as needed
+            _needSortSolidBehind = true;
+            _needSortTransparent = true;
+            _needSortSolidInFront = true;
         }
 
         // --- NEW METHOD FOR LIGHT CULLING ---
@@ -865,81 +931,6 @@ namespace Client.Main.Controls
 
             // Use the highly optimized Intersects check. This is much faster than manual distance calculations.
             return frustum.Intersects(lightSphere);
-        }
-
-        private void BuildStaticChunkCache()
-        {
-            _staticChunksReady = false;
-            _staticChunkCountWithObjects = 0;
-            _staticChunkCacheDirty = false;
-
-            _staticChunkGridSize = Constants.TERRAIN_SIZE / StaticChunkSizeTiles;
-            if (_staticChunkGridSize <= 0)
-                return;
-
-            _staticChunkWorldSize = StaticChunkSizeTiles * Constants.TERRAIN_SCALE;
-            int chunkCount = _staticChunkGridSize * _staticChunkGridSize;
-            _staticChunks = new StaticChunk[chunkCount];
-            for (int i = 0; i < chunkCount; i++)
-                _staticChunks[i] = new StaticChunk();
-
-            var snapshot = Objects.GetSnapshot();
-            for (int i = 0; i < snapshot.Count; i++)
-            {
-                var obj = snapshot[i];
-                if (!IsChunkableStaticObject(obj))
-                    continue;
-
-                // Use Position (object-space) to bucket; safer if WorldPosition not yet recalculated
-                var pos = obj.Position;
-                int cx = (int)(pos.X / _staticChunkWorldSize);
-                int cy = (int)(pos.Y / _staticChunkWorldSize);
-                cx = Math.Max(0, Math.Min(cx, _staticChunkGridSize - 1));
-                cy = Math.Max(0, Math.Min(cy, _staticChunkGridSize - 1));
-
-                int idx = cy * _staticChunkGridSize + cx;
-                var chunk = _staticChunks[idx];
-                chunk.Objects.Add(obj);
-
-                var bbox = obj.BoundingBoxWorld;
-                if (chunk.HasBounds)
-                    chunk.Bounds = BoundingBox.CreateMerged(chunk.Bounds, bbox);
-                else
-                {
-                    chunk.Bounds = bbox;
-                    chunk.HasBounds = true;
-                }
-            }
-
-            bool anyObjects = false;
-            for (int i = 0; i < _staticChunks.Length; i++)
-            {
-                var chunk = _staticChunks[i];
-                if (!chunk.HasBounds) continue;
-
-                chunk.Center2D = new Vector2(
-                    (chunk.Bounds.Min.X + chunk.Bounds.Max.X) * 0.5f,
-                    (chunk.Bounds.Min.Y + chunk.Bounds.Max.Y) * 0.5f);
-                chunk.IsVisible = false;
-                chunk.SurfaceDirty = true;
-
-                // Count cacheable objects for future surface caching
-                int cacheableCount = 0;
-                for (int n = 0; n < chunk.Objects.Count; n++)
-                {
-                    if (chunk.Objects[n] is ModelObject model && model.IsStaticForCaching)
-                        cacheableCount++;
-                }
-                chunk.CacheableObjectCount = cacheableCount;
-
-                if (chunk.Objects.Count > 0)
-                {
-                    anyObjects = true;
-                    _staticChunkCountWithObjects++;
-                }
-            }
-
-            _staticChunksReady = anyObjects;
         }
 
         // --- Map Tile Initialization ---
@@ -975,15 +966,6 @@ namespace Client.Main.Controls
             _players.Clear();
             _monsters.Clear();
             _droppedItems.Clear();
-
-            // Dispose static chunk cached surfaces
-            if (_staticChunks != null)
-            {
-                for (int i = 0; i < _staticChunks.Length; i++)
-                    _staticChunks[i]?.Dispose();
-                _staticChunks = null;
-            }
-            _staticChunksReady = false;
 
             sw.Stop();
             var elapsedObjects = sw.ElapsedMilliseconds;

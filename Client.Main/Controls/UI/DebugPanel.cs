@@ -16,12 +16,10 @@ namespace Client.Main.Controls.UI
         private LabelControl _objectCursorLabel;
         private LabelControl _tileFlagsLabel;
         private LabelControl _performanceMetricsLabel;
-        private LabelControl _objectMetricsLabel; // New label for object metrics
         private LabelControl _bmdMetricsLabel;    // New label for BMD buffer metrics
         private LabelControl _poolingMetricsLabel; // NEW: Matrix pooling stats
         private LabelControl _batchSortingLabel;   // NEW: Batch sorting status
         private LabelControl _lightingStatusLabel; // NEW: Lighting mode status
-        private LabelControl _chunkMetricsLabel;   // NEW: Chunk culling stats
         private double _updateTimer = 0;
         private const double UPDATE_INTERVAL_MS = 100; // 100ms
         private StringBuilder _sb = new StringBuilder(350); // Increased capacity for new metrics
@@ -50,8 +48,6 @@ namespace Client.Main.Controls.UI
             Controls.Add(_tileFlagsLabel = new LabelControl { Text = "Tile Flags: {0}", TextColor = Color.Lime, X = posX, Y = posY += labelHeight });
             Controls.Add(_lightingStatusLabel = new LabelControl { Text = "Lighting: {0}", TextColor = Color.White, X = posX, Y = posY += labelHeight });
             Controls.Add(_performanceMetricsLabel = new LabelControl { Text = "Perf: {0}", TextColor = Color.OrangeRed, X = posX, Y = posY += labelHeight });
-            Controls.Add(_objectMetricsLabel = new LabelControl { Text = "Objects: {0}", TextColor = Color.LightCyan, X = posX, Y = posY += labelHeight });
-            Controls.Add(_chunkMetricsLabel = new LabelControl { Text = "Chunks: {0}", TextColor = Color.LightGreen, X = posX, Y = posY += labelHeight });
             Controls.Add(_bmdMetricsLabel = new LabelControl { Text = "BMD: {0}", TextColor = Color.LightSkyBlue, X = posX, Y = posY += labelHeight });
             Controls.Add(_poolingMetricsLabel = new LabelControl { Text = "Pool: {0}", TextColor = Color.Cyan, X = posX, Y = posY += labelHeight });
             Controls.Add(_batchSortingLabel = new LabelControl { Text = "Batch: {0}", TextColor = Color.Magenta, X = posX, Y = posY += labelHeight });
@@ -79,23 +75,19 @@ namespace Client.Main.Controls.UI
             {
                 _updateTimer = 0;
 
-                _sb.Clear().Append("FPS: ").Append((int)FPSCounter.Instance.FPS_AVG);
-                _fpsLabel.Text = _sb.ToString();
+                _fpsLabel.Text = $"FPS: {(int)FPSCounter.Instance.FPS_AVG}, UPS: {(int)UPSCounter.Instance.UPS_AVG}";
 
                 Point screenMouse = MuGame.Instance.Mouse.Position;
                 Point uiMouse = MuGame.Instance.UiMouseState.Position;
-                _sb.Clear().Append("Mouse Screen (X:").Append(screenMouse.X)
-                   .Append(", Y:").Append(screenMouse.Y)
-                   .Append(") UI (X:").Append(uiMouse.X)
-                   .Append(", Y:").Append(uiMouse.Y).Append(')');
-                _mousePosLabel.Text = _sb.ToString();
 
-                _sb.Clear().Append("FXAA: ").Append(GraphicsManager.Instance.IsFXAAEnabled ? "ON" : "OFF")
-                   .Append(" - AlphaRGB:").Append(GraphicsManager.Instance.IsAlphaRGBEnabled ? "ON" : "OFF");
-                _effectsStatusLabel.Text = _sb.ToString();
+                _mousePosLabel.Text = $"Mouse Screen (X:{screenMouse.X}, Y:{screenMouse.Y}) UI (X:{uiMouse.X}, Y:{uiMouse.Y})";
 
-                _sb.Clear().Append("Cursor Object: ").Append(World?.Scene?.MouseHoverObject != null ? World.Scene.MouseHoverObject.GetType().Name : "N/A");
-                _objectCursorLabel.Text = _sb.ToString();
+                var fxaa = GraphicsManager.Instance.IsFXAAEnabled ? "ON" : "OFF";
+                var alphargb = GraphicsManager.Instance.IsFXAAEnabled ? "ON" : "OFF"; ;
+                _effectsStatusLabel.Text = $"FXAA: {fxaa} - AlphaRGB: {alphargb}";
+
+                var cursorObj = World?.Scene?.MouseHoverObject != null ? World.Scene.MouseHoverObject.GetType().Name : "N/A";
+                _objectCursorLabel.Text = $"Cursor Object: {cursorObj}";
 
                 if (World is WalkableWorldControl walkableWorld && walkableWorld.Walker != null)
                 {
@@ -103,23 +95,16 @@ namespace Client.Main.Controls.UI
                     _mapTileLabel.Visible = true;
                     _tileFlagsLabel.Visible = true;
                     _performanceMetricsLabel.Visible = true;
-                    _objectMetricsLabel.Visible = true; // Show object metrics label
-                    _chunkMetricsLabel.Visible = true;
                     _bmdMetricsLabel.Visible = true;
                     _lightingStatusLabel.Visible = true;
 
-                    _sb.Clear().Append("Player Cords - X: ").Append(walkableWorld.Walker.Location.X)
-                       .Append(", Y:").Append(walkableWorld.Walker.Location.Y);
-                    _playerCordsLabel.Text = _sb.ToString();
+                    _playerCordsLabel.Text = $"Player Cords - X: {walkableWorld.Walker.Location.X}, Y: {walkableWorld.Walker.Location.Y}";
 
-                    _sb.Clear().Append("MAP Tile - X: ").Append(walkableWorld.MouseTileX)
-                       .Append(", Y:").Append(walkableWorld.MouseTileY);
-                    _mapTileLabel.Text = _sb.ToString();
+                    _mapTileLabel.Text = $"MAP Tile - X: {walkableWorld.MouseTileX}, Y: {walkableWorld.MouseTileY}";
 
                     var flags = walkableWorld.Terrain.RequestTerrainFlag((int)walkableWorld.Walker.Location.X,
                                                                          (int)walkableWorld.Walker.Location.Y);
-                    _sb.Clear().Append("Tile Flags: ").Append(flags);
-                    _tileFlagsLabel.Text = _sb.ToString();
+                    _tileFlagsLabel.Text = $"Tile Flags: {flags}";
 
                     bool terrainGpu = walkableWorld.Terrain?.IsGpuTerrainLighting == true;
                     bool shaderAvailable = walkableWorld.Terrain?.IsDynamicLightingShaderAvailable == true;
@@ -140,18 +125,6 @@ namespace Client.Main.Controls.UI
                        .Append($"Blk:{terrainMetrics.DrawnBlocks} ")
                        .Append($"Cel:{terrainMetrics.DrawnCells}");
                     _performanceMetricsLabel.Text = _sb.ToString();
-
-                    // Update object performance metrics display
-                    var objectMetrics = walkableWorld.ObjectMetrics;
-                    _sb.Clear().Append($"Objects: Drw:{objectMetrics.DrawnTotal}/{objectMetrics.TotalObjects} (Culled:{objectMetrics.CulledByFrustum})");
-                    _objectMetricsLabel.Text = _sb.ToString();
-
-                    _sb.Clear()
-                      .Append("Chunks: ")
-                      .Append(objectMetrics.StaticChunksVisible).Append('/').Append(objectMetrics.StaticChunksTotal)
-                      .Append(" vis, Culled:").Append(objectMetrics.StaticChunksCulled)
-                      .Append(" ObjCulled:").Append(objectMetrics.StaticObjectsCulledByChunk);
-                    _chunkMetricsLabel.Text = _sb.ToString();
 
                     // Update BMD buffer metrics
                     var bmd = BMDLoader.Instance;
@@ -186,8 +159,6 @@ namespace Client.Main.Controls.UI
                     _mapTileLabel.Visible = false;
                     _tileFlagsLabel.Visible = false;
                     _performanceMetricsLabel.Visible = false;
-                    _objectMetricsLabel.Visible = false; // Hide object metrics label
-                    _chunkMetricsLabel.Visible = false;
                     _bmdMetricsLabel.Visible = false;
                     _poolingMetricsLabel.Visible = false;
                     _batchSortingLabel.Visible = false;
