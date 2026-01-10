@@ -22,7 +22,7 @@ namespace Client.Main
         public const float ROTATION_SENSITIVITY = 0.003f;
 
         // Default camera values
-        public const float DEFAULT_CAMERA_DISTANCE = 1700f;
+        public const float DEFAULT_CAMERA_DISTANCE = 1300f;
         public static readonly float DEFAULT_CAMERA_PITCH = MathHelper.ToRadians(135.87f);
         public static readonly float DEFAULT_CAMERA_YAW = MathHelper.ToRadians(-41.99f);
 
@@ -40,7 +40,11 @@ namespace Client.Main
         public const bool SHOW_NAMES_ON_HOVER = true;
 
         // Distance thresholds
+#if ANDROID
+        public const float LOW_QUALITY_DISTANCE = 1000f;
+#else
         public const float LOW_QUALITY_DISTANCE = 3500f;
+#endif
 
         // Scene / audio
         public static Type ENTRY_SCENE;
@@ -177,6 +181,8 @@ namespace Client.Main
         public static string DefaultDataPathUrl = "https://full-wkr.mu.webzen.co.kr/muweb/full/MU_Red_1_20_61_Full.zip";
         public static string SETTINGS_PATH = "appsettings.json";
 
+        // Android-specific
+        public const float ANDROID_FOV_SCALE = 0.8f;
         public static float FOV_SCALE = 1f;
 
         static Constants()
@@ -184,6 +190,9 @@ namespace Client.Main
             ApplyBaseDefaults();
 #if DEBUG
             ApplyDebugDefaults();
+#endif
+#if ANDROID
+            ApplyAndroidDefaults();
 #endif
         }
 
@@ -241,6 +250,29 @@ namespace Client.Main
             BACKGROUND_MUSIC = false;
             SOUND_EFFECTS = false;
             SHOW_DEBUG_PANEL = true;
+        }
+#endif
+
+#if ANDROID
+        private static void ApplyAndroidDefaults()
+        {
+            DRAW_GRASS = false;
+            ENABLE_DYNAMIC_LIGHTS = false;
+            ENABLE_DYNAMIC_LIGHTING_SHADER = true;
+            ENABLE_TERRAIN_GPU_LIGHTING = false;
+            OPTIMIZE_FOR_INTEGRATED_GPU = true;
+            ENABLE_LOW_QUALITY_IN_LOGIN_SCENE = true;
+            ENABLE_ITEM_MATERIAL_SHADER = true;
+            ENABLE_MONSTER_MATERIAL_SHADER = true;
+            ENABLE_WEAPON_TRAIL = false;
+            HIGH_QUALITY_TEXTURES = false;
+            RENDER_SCALE = 0.75f;
+            DYNAMIC_LIGHT_UPDATE_FPS = 30;
+
+#if ANDROID
+            // Ruta interna de la app, compatible con todas las versiones de Android
+            DataPath = global::Android.App.Application.Context.FilesDir.AbsolutePath + "/Data";
+#endif
         }
 #endif
     }

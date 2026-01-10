@@ -267,7 +267,7 @@ namespace Client.Main.Controls
                     if (!obj.Visible)
                         continue;
 
-                    if (obj is EffectObject || Camera.Instance.Frustum.Intersects(obj.BoundingBoxWorld))
+                    if (obj is WalkerObject { IsMainWalker: true } || Camera.Instance.Frustum.Intersects(obj.BoundingBoxWorld))
                         _visibleObjects.Add(obj);
                 }
 

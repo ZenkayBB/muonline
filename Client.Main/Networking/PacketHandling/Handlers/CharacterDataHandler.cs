@@ -13,6 +13,7 @@ using Client.Main.Objects.Effects;
 using Client.Main.Scenes;
 using Client.Main;
 using Microsoft.Xna.Framework;
+using Client.Main.Objects.Player;
 
 namespace Client.Main.Networking.PacketHandling.Handlers
 {
@@ -1224,9 +1225,56 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                     }
                     else
                     {
-                        // TODO: Handle other players' skill animations when scope system supports it
-                        _logger.LogDebug("Other player {PlayerId} used targeted skill {SkillId} on {TargetId}",
-                            playerId, skillId, targetId);
+                        // Handle other players' skill animations
+                        if (activeScene.World is WalkableWorldControl world && world.TryGetWalkerById(playerId, out var caster))
+                        {
+                            int animationId = Core.Utilities.SkillDatabase.GetSkillAnimation(skillId);
+                            string soundPath = Client.Data.BMD.SkillDefinitions.GetSkillSound(skillId);
+
+                            // Play attenuated skill sound
+                            if (!string.IsNullOrEmpty(soundPath))
+                            {
+                                SoundController.Instance.PlayBufferWithAttenuation(soundPath, caster.Position, world.Walker.Position);
+                            }
+
+                            if (caster is PlayerObject remotePlayer)
+                            {
+                                remotePlayer.TriggerVehicleSkillAnimation();
+                            }
+
+                            if (animationId > 0)
+                            {
+                                caster.PlayAction((ushort)animationId);
+                            }
+
+                            // Spawn skill visual effect
+                            Vector3? targetPosition = null;
+                            if (targetId != 0 && world.TryGetWalkerById(targetId, out var target))
+                                targetPosition = target.WorldPosition.Translation;
+
+                            var effectContext = new Objects.Effects.Skills.SkillEffectContext
+                            {
+                                Caster = caster as WalkerObject,
+                                TargetId = targetId,
+                                SkillId = skillId,
+                                TargetPosition = targetPosition,
+                                World = world
+                            };
+
+                            if (Objects.Effects.Skills.SkillVisualEffectRegistry.TrySpawn(skillId, effectContext, out var effect))
+                            {
+                                world.Objects.Add(effect!);
+                                _ = effect!.Load();
+                            }
+
+                            _logger.LogInformation("Remote player {PlayerId} used targeted skill {SkillId} ({SkillName}) on target {TargetId}",
+                                playerId, skillId, Core.Utilities.SkillDatabase.GetSkillName(skillId), targetId);
+                        }
+                        else
+                        {
+                            _logger.LogDebug("Other player {PlayerId} used targeted skill {SkillId} on {TargetId}, but caster not found in world.",
+                                playerId, skillId, targetId);
+                        }
                     }
                 });
             }
@@ -1309,8 +1357,57 @@ namespace Client.Main.Networking.PacketHandling.Handlers
                     }
                     else
                     {
-                        // TODO: Handle other players' skill animations when scope system supports it
-                        _logger.LogDebug("Other player {PlayerId} used skill {SkillId}", playerId, skillId);
+                        // Handle other players' area skill animations
+                        if (activeScene.World is WalkableWorldControl world && world.TryGetWalkerById(playerId, out var caster))
+                        {
+                            int animationId = Core.Utilities.SkillDatabase.GetSkillAnimation(skillId);
+                            string soundPath = Client.Data.BMD.SkillDefinitions.GetSkillSound(skillId);
+
+                            // Play attenuated skill sound
+                            if (!string.IsNullOrEmpty(soundPath))
+                            {
+                                SoundController.Instance.PlayBufferWithAttenuation(soundPath, caster.Position, world.Walker.Position);
+                            }
+
+                            if (caster is PlayerObject remotePlayer)
+                            {
+                                remotePlayer.TriggerVehicleSkillAnimation();
+                            }
+
+                            if (animationId > 0)
+                            {
+                                caster.PlayAction((ushort)animationId);
+                            }
+
+                            // Spawn skill visual effect
+                            float worldX = (targetX + 0.5f) * Constants.TERRAIN_SCALE;
+                            float worldY = (targetY + 0.5f) * Constants.TERRAIN_SCALE;
+                            float worldZ = world.Terrain.RequestTerrainHeight(worldX, worldY);
+                            var targetPosition = new Vector3(worldX, worldY, worldZ);
+
+                            var effectContext = new Objects.Effects.Skills.SkillEffectContext
+                            {
+                                Caster = caster as WalkerObject,
+                                TargetId = 0,
+                                SkillId = skillId,
+                                TargetPosition = targetPosition,
+                                World = world
+                            };
+
+                            if (Objects.Effects.Skills.SkillVisualEffectRegistry.TrySpawn(skillId, effectContext, out var effect))
+                            {
+                                world.Objects.Add(effect!);
+                                _ = effect!.Load();
+                            }
+
+                            _logger.LogInformation("Remote player {PlayerId} used area skill {SkillId} ({SkillName}) at ({X},{Y})",
+                                playerId, skillId, Core.Utilities.SkillDatabase.GetSkillName(skillId), targetX, targetY);
+                        }
+                        else
+                        {
+                            _logger.LogDebug("Other player {PlayerId} used area skill {SkillId} at ({X},{Y}), but caster not found in world.",
+                                playerId, skillId, targetX, targetY);
+                        }
                     }
                 });
             }

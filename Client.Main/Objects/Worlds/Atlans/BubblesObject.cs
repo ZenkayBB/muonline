@@ -20,11 +20,9 @@ namespace Client.Main.Objects.Worlds.Atlans
 
             // Create the bubble particle system instance
             var bubbleSystem = new BubbleParticleSystem();
-            // Set its position (for example, to match the position of BubblesObject)
-            bubbleSystem.Position = new Vector3(Position.X, Position.Y, Position.Z);
-
-            // Add the bubble system to the world's object list directly
-            World.Objects.Add(bubbleSystem);
+            // Add the bubble system to the children list directly
+            Children.Add(bubbleSystem);
+            bubbleSystem.Position = Vector3.Zero;
         }
 
         public override void Update(GameTime gameTime)

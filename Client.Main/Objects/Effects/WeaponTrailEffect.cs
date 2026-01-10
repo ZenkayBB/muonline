@@ -67,6 +67,19 @@ namespace Client.Main.Objects.Effects
         }
 
         /// <summary>
+        /// Manually add a sample point to the trail. Useful when you want the trail to follow an external
+        /// object's position precisely (e.g., a separate head object updated in another update pass).
+        /// </summary>
+        public void RecordSample(Vector3 position, float speed)
+        {
+            // Ensure the internal state matches the externally supplied sample
+            AddSample(position, speed);
+            _lastPosition = position;
+            _timeSinceLastSample = 0f;
+            _hasLast = true;
+        }
+
+        /// <summary>
         /// Optional tuning for trail visuals without affecting defaults used by weapons.
         /// </summary>
         public void ConfigureStyle(

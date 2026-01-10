@@ -4,6 +4,7 @@ using Microsoft.Xna.Framework.Graphics;
 using System;
 using System.Threading.Tasks;
 using Client.Data.BMD;
+using Client.Main.Graphics;
 
 namespace Client.Main.Objects.Worlds.Atlans
 {
@@ -64,6 +65,12 @@ namespace Client.Main.Objects.Worlds.Atlans
             if (Model?.Meshes == null || Model.Meshes.Length == 0 || _originalTexCoords == null)
                 return;
 
+            // PERFORMANCE: Skip intensive CPU vertex animation if out of view or too far
+            var camDistSq = Vector3.DistanceSquared(Camera.Instance.Position, WorldPosition.Translation);
+            const float MaxAnimDistanceSq = 3000f * 3000f; // Skip animation if over 30 tiles away
+            if (camDistSq > MaxAnimDistanceSq || !Camera.Instance.Frustum.Intersects(BoundingBoxWorld))
+                return;
+
             // Update wave time uniformly
             float dt = (float)gameTime.ElapsedGameTime.TotalSeconds;
             _waveTime += dt * 0.5f;
@@ -85,64 +92,29 @@ namespace Client.Main.Objects.Worlds.Atlans
                 _vertexOffsets[i] = new System.Numerics.Vector3(0, waveOffset * VERTEX_WAVE_HEIGHT, 0);
             }
 
-            // Smooth out vertex offsets for each triangle
+            // Update vertex positions and UVs in a single pass over triangles to minimize overhead
             foreach (var triangle in mesh.Triangles)
             {
                 for (int i = 0; i < triangle.VertexIndex.Length; i++)
                 {
-                    if (triangle.VertexIndex[i] < 0)
-                        continue;
-
-                    System.Numerics.Vector3 avgOffset = System.Numerics.Vector3.Zero;
-                    int validNeighbors = 0;
-                    for (int j = 0; j < triangle.VertexIndex.Length; j++)
-                    {
-                        if (triangle.VertexIndex[j] >= 0)
-                        {
-                            avgOffset += _vertexOffsets[triangle.VertexIndex[j]];
-                            validNeighbors++;
-                        }
-                    }
-                    if (validNeighbors > 0)
-                    {
-                        avgOffset /= validNeighbors;
-                        int vertexIdx = triangle.VertexIndex[i];
-                        _vertexOffsets[vertexIdx] = System.Numerics.Vector3.Lerp(_vertexOffsets[vertexIdx], avgOffset, 0.5f);
-                    }
-                }
-            }
-
-            // Update vertex positions using the calculated offsets
-            for (int i = 0; i < mesh.Vertices.Length; i++)
-            {
-                var originalVertex = _originalVertices[i];
-                var vertex = originalVertex;
-                vertex.Position = originalVertex.Position + _vertexOffsets[i];
-                mesh.Vertices[i] = vertex;
-            }
-
-            // Update texture coordinates – apply scrolling and wave offset only to V coordinate (upward movement)
-            foreach (var triangle in mesh.Triangles)
-            {
-                for (int i = 0; i < triangle.TexCoordIndex.Length; i++)
-                {
-                    if (triangle.TexCoordIndex[i] < 0)
-                        continue;
-
-                    int texCoordIdx = triangle.TexCoordIndex[i];
                     int vertexIdx = triangle.VertexIndex[i];
+                    int texCoordIdx = triangle.TexCoordIndex[i];
 
-                    if (texCoordIdx >= 0 && texCoordIdx < mesh.TexCoords.Length &&
-                        vertexIdx >= 0 && vertexIdx < mesh.Vertices.Length)
+                    if (vertexIdx >= 0 && vertexIdx < mesh.Vertices.Length)
                     {
-                        var originalTexCoord = _originalTexCoords[texCoordIdx];
-                        var texCoord = originalTexCoord;
+                        // Apply wave offset to position
+                        var vertex = _originalVertices[vertexIdx];
+                        vertex.Position += _vertexOffsets[vertexIdx];
+                        mesh.Vertices[vertexIdx] = vertex;
 
-                        // Calculate a positive UV offset (only upward motion) with reduced amplitude
-                        float uvOffset = Math.Abs(_vertexOffsets[vertexIdx].Y / VERTEX_WAVE_HEIGHT) * WAVE_AMPLITUDE;
-                        texCoord.U = originalTexCoord.U; // U remains unchanged
-                        texCoord.V = originalTexCoord.V + _currentOffset + uvOffset;
-                        mesh.TexCoords[texCoordIdx] = texCoord;
+                        // Apply scrolling and wave-based UV offset
+                        if (texCoordIdx >= 0 && texCoordIdx < mesh.TexCoords.Length)
+                        {
+                            var texCoord = _originalTexCoords[texCoordIdx];
+                            float uvOffset = Math.Abs(_vertexOffsets[vertexIdx].Y / VERTEX_WAVE_HEIGHT) * WAVE_AMPLITUDE;
+                            texCoord.V += _currentOffset + uvOffset;
+                            mesh.TexCoords[texCoordIdx] = texCoord;
+                        }
                     }
                 }
             }

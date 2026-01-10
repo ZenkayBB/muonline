@@ -1168,14 +1168,14 @@ namespace Client.Main.Objects.Player
             SetActionSpeed(PlayerAction.PlayerStopWand, 0.30f);
 
             // Walk animations = 0.33f (from ZzzCharacter.cpp:429, NOT ZzzOpenData.cpp)
-            SetActionSpeedRange(PlayerAction.PlayerWalkMale, PlayerAction.PlayerWalkCrossbow, 0.38f); // different animation speed?
-            SetActionSpeed(PlayerAction.PlayerWalkWand, 0.44f);
-            SetActionSpeed(PlayerAction.PlayerWalkSwim, 0.35f);
+            SetActionSpeedRange(PlayerAction.PlayerWalkMale, PlayerAction.PlayerWalkCrossbow, 0.33f);
+            SetActionSpeed(PlayerAction.PlayerWalkWand, 0.33f);
+            SetActionSpeed(PlayerAction.PlayerWalkSwim, 0.33f);
 
-            // Run animations = 0.34f (faster than walk!)
-            SetActionSpeedRange(PlayerAction.PlayerRun, PlayerAction.PlayerRunRideWeapon, 0.34f);
-            SetActionSpeed(PlayerAction.PlayerRunWand, 0.76f);
-            SetActionSpeed(PlayerAction.PlayerRunSwim, 0.35f);
+            // Run animations = 0.40f (adjusted for better movement sync)
+            SetActionSpeedRange(PlayerAction.PlayerRun, PlayerAction.PlayerRunRideWeapon, 0.40f);
+            SetActionSpeed(PlayerAction.PlayerRunWand, 0.40f);
+            SetActionSpeed(PlayerAction.PlayerRunSwim, 0.40f);
 
             SetActionSpeedRange(PlayerAction.PlayerDefense1, PlayerAction.PlayerShock, 0.32f);
             SetActionSpeedRange(PlayerAction.PlayerDie1, PlayerAction.PlayerDie2, 0.45f);
@@ -1203,16 +1203,16 @@ namespace Client.Main.Objects.Player
             SetActionSpeed(PlayerAction.PlayerSkillRiderFly, 0.20f);
 
             SetActionSpeed(PlayerAction.PlayerStopTwoHandSwordTwo, 0.24f);
-            SetActionSpeed(PlayerAction.PlayerWalkTwoHandSwordTwo, 0.30f);
-            SetActionSpeed(PlayerAction.PlayerRunTwoHandSwordTwo, 0.30f);
+            SetActionSpeed(PlayerAction.PlayerWalkTwoHandSwordTwo, 0.33f);
+            SetActionSpeed(PlayerAction.PlayerRunTwoHandSwordTwo, 0.48f);
             SetActionSpeed(PlayerAction.PlayerAttackTwoHandSwordTwo, 0.24f);
 
             SetActionSpeed(PlayerAction.PlayerAttackDeathstab, 0.45f);
 
             SetActionSpeed(PlayerAction.PlayerDarklordStand, 0.30f);
-            SetActionSpeed(PlayerAction.PlayerDarklordWalk, 0.30f);
+            SetActionSpeed(PlayerAction.PlayerDarklordWalk, 0.33f);
             SetActionSpeed(PlayerAction.PlayerStopRideHorse, 0.30f);
-            SetActionSpeed(PlayerAction.PlayerRunRideHorse, 0.30f);
+            SetActionSpeed(PlayerAction.PlayerRunRideHorse, 0.48f);
             SetActionSpeed(PlayerAction.PlayerAttackStrike, 0.20f);
             SetActionSpeed(PlayerAction.PlayerAttackTeleport, 0.28f);
             SetActionSpeed(PlayerAction.PlayerAttackRideStrike, 0.30f);
@@ -1246,7 +1246,7 @@ namespace Client.Main.Objects.Player
             SetActionSpeed(PlayerAction.PlayerRageFenrirStand, 0.21f);
 
             SetActionSpeedRange(PlayerAction.PlayerRageFenrirRun, PlayerAction.PlayerRageFenrirRunOneLeft, 0.355f);
-            SetActionSpeed(PlayerAction.PlayerRageUniRun, 0.30f);
+            SetActionSpeed(PlayerAction.PlayerRageUniRun, 0.48f);
             SetActionSpeed(PlayerAction.PlayerRageUniAttackOneRight, 0.20f);
             SetActionSpeed(PlayerAction.PlayerRageUniStopOneRight, 0.18f);
             SetActionSpeed(PlayerAction.PlayerStopRagefighter, 0.16f);
@@ -2707,6 +2707,7 @@ namespace Client.Main.Objects.Player
             }
 
             bool isRunning = UpdateMovementSpeedAndRunState(world, flags, isAboutToMove);
+            PreventLastFrameInterpolation = isRunning && !HasEquippedWings && mode == MovementMode.Walk;
 
             if (isAboutToMove)
             {
@@ -2787,6 +2788,7 @@ namespace Client.Main.Objects.Player
             }
 
             bool isRunning = UpdateMovementSpeedAndRunState(world, flags, isAboutToMove);
+            PreventLastFrameInterpolation = isRunning && !HasEquippedWings && mode == MovementMode.Walk;
 
             if (isAboutToMove)
             {

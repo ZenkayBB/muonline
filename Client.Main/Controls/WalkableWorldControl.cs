@@ -21,8 +21,6 @@ namespace Client.Main.Controls
 
         private CursorObject _cursor;
         private float _cursorNextMoveTime;
-        private int _previousScrollValue;
-        private float _targetCameraDistance;
 
         // --- Mouse tile caching for performance ---
         private Vector2 _lastMouseInBackBuffer = new Vector2(-1, -1);
@@ -149,18 +147,6 @@ namespace Client.Main.Controls
                 _cursorNextMoveTime -= (float)time.ElapsedGameTime.TotalMilliseconds;
             }
 
-            var mouseState = MuGame.Instance.Mouse;
-            int currentScroll = mouseState.ScrollWheelValue;
-            int scrollDiff = currentScroll - _previousScrollValue;
-            if (scrollDiff != 0 && !Scene.IsMouseInputConsumedThisFrame) // check if UI already handled scroll
-            {
-                float zoomChange = scrollDiff / 100f * 100f;
-                _targetCameraDistance = MathHelper.Clamp(
-                    _targetCameraDistance - zoomChange,
-                    100f, // Assuming 100f as the minimum camera distance
-                    500f); // Assuming 500f as the maximum camera distance
-            }
-            _previousScrollValue = currentScroll;
 
             base.Update(time);
         }

@@ -50,6 +50,10 @@ namespace Client.Main.Objects.Effects
             for (int i = 0; i < MAX_BUBBLES; i++)
                 _bubbles[i] = CreateBubble(randomizeLife: true);
 
+            // Set bounding box to cover the area where bubbles can spawn and float up
+            // Range is 100x100, max height is speed(50) * life(25) = 1250
+            BoundingBoxLocal = new BoundingBox(new Vector3(-60, -60, -10), new Vector3(60, 60, 1300));
+
             await base.Load();
         }
 
@@ -99,7 +103,7 @@ namespace Client.Main.Objects.Effects
             // Render bubbles with depth write enabled so they can occlude other objects
             using (new SpriteBatchScope(
                        sb,
-                       SpriteSortMode.Immediate,
+                       SpriteSortMode.Deferred,
                        BlendState.AlphaBlend,
                        SamplerState.LinearClamp,
                        DepthStencilState.Default,

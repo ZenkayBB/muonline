@@ -52,7 +52,8 @@ namespace Client.Main.Objects.Effects.Skills
                 targetAngle = context.Caster.Angle.Z;
             }
 
-            return new ScrollOfEvilSpiritEffect(context.Caster, targetAngle);
+            var effect = new ScrollOfEvilSpiritEffect(context.Caster, targetAngle);
+            return effect;
         }
 
         private static WalkerObject? FindTargetById(WalkableWorldControl world, ushort targetId)
@@ -73,5 +74,8 @@ namespace Client.Main.Objects.Effects.Skills
 
             return null;
         }
+
+
+
     }
 }

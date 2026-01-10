@@ -34,7 +34,7 @@ namespace Client.Main.Objects.Effects
         // Larger, more transparent spirits
         private const float MainSpiritScale = 180f;
         private const float VisualSpiritScale = 60f;
-        private const float AlphaMultiplier = 0.4f;
+        private const float AlphaMultiplier = 1.0f;  // Full opacity from start
 
         // Dark light settings - shadows don't stack thanks to TerrainLightManager Min logic
         private const float DarkLightRadius = 160f;
@@ -58,6 +58,9 @@ namespace Client.Main.Objects.Effects
 
         private readonly SpiritBolt[] _spirits = new SpiritBolt[SpiritCount * 2];
         private int _spiritCount;
+
+        // Laser heads (heads for the main spirits)
+        private readonly EvilSpiritLaserHead?[] _heads = new EvilSpiritLaserHead[SpiritCount * 2];
 
         // Dark lights for shadow effect (one per main spirit)
         private readonly DynamicLight[] _darkLights = new DynamicLight[SpiritCount];
@@ -153,6 +156,11 @@ namespace Client.Main.Objects.Effects
                     Scale = MainSpiritScale
                 };
 
+                // Create laser head for main bolt
+                var head = new EvilSpiritLaserHead();
+                _heads[_spiritCount - 1] = head;
+                World?.Objects.Add(head);
+
                 // Visual bolt (smaller scale)
                 _spirits[_spiritCount++] = new SpiritBolt
                 {
@@ -164,6 +172,12 @@ namespace Client.Main.Objects.Effects
                     LifeTime = LifeTimeFrames,
                     Scale = VisualSpiritScale
                 };
+
+                // Create laser head for visual bolt (use same size as main head)
+                var visualHead = new EvilSpiritLaserHead();
+                visualHead.Scale = head.Scale;
+                _heads[_spiritCount - 1] = visualHead;
+                World?.Objects.Add(visualHead);
 
                 // Create dark light for this main spirit
                 _darkLights[i] = new DynamicLight
@@ -304,6 +318,28 @@ namespace Client.Main.Objects.Effects
 
                 spirit.Position += forward * Velocity * frameFactor;
 
+                // Update head position and orientation to follow actual motion vector
+                var head = _heads[i];
+                if (head != null)
+                {
+                    // compute forward direction based on the movement vector
+                    Vector3 motion = forward;
+                    float motionLen = motion.Length();
+                    if (motionLen > 1e-6f)
+                    {
+                        float yawDeg = MathHelper.ToDegrees(MathF.Atan2(motion.Y, motion.X));
+                        float pitchDeg = MathHelper.ToDegrees(MathF.Asin(MathHelper.Clamp(motion.Z / motionLen, -1f, 1f)));
+                        head.UpdateTransform(spirit.Position, new Vector3(pitchDeg, 0f, yawDeg));
+                    }
+                    else
+                    {
+                        head.UpdateTransform(spirit.Position, spirit.Angle);
+                    }
+
+                    head.Alpha = MathHelper.Clamp(spirit.LifeTime / LifeTimeFrames, 0f, 1f) * AlphaMultiplier;
+                    head.Hidden = spirit.LifeTime <= 0;
+                }
+
                 // Height constraints
                 if (World?.Terrain != null)
                 {
@@ -430,6 +466,7 @@ namespace Client.Main.Objects.Effects
             if (camera == null)
                 return;
 
+            /*
             int quadIndex = 0;
             BuildVertices(ref quadIndex);
 
@@ -464,6 +501,7 @@ namespace Client.Main.Objects.Effects
             GraphicsDevice.BlendState = prevBlend;
             GraphicsDevice.DepthStencilState = prevDepth;
             GraphicsDevice.RasterizerState = prevRaster;
+            */
         }
 
         private void BuildVertices(ref int quadIndex)
@@ -527,6 +565,10 @@ namespace Client.Main.Objects.Effects
         private void RemoveSelf()
         {
             RemoveDarkLights();
+
+            foreach (var head in _heads)
+                if (head != null)
+                    World?.RemoveObject(head);
 
             if (Parent != null)
                 Parent.Children.Remove(this);
